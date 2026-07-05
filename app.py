@@ -1,192 +1,184 @@
-# =========================================================================
-# 1. استيراد المكتبات الأدوات اللازمة للبرنامج
-# =========================================================================
-import os                          # للتعامل مع نظام التشغيل وقراءة الملفات والمجلدات
-import streamlit as st             # المكتبة السحرية لبناء واجهات المستخدم الرسومية لبرامج الذكاء الاصطناعي بسهولة
-from dotenv import load_dotenv     # لقراءة مفاتيح الـ API السرية من ملفات الإعدادات الخفية (.env)
-from PyPDF2 import PdfReader       # مكتبة مخصصة لقراءة نصوص ملفات الـ PDF واستخراجها صفحة بصفحة
+# =============================================================================
+# app.py
+# =============================================================================
+# مشروع بسيط تعليمي:
+# PDF RAG Chat
+#
+# الفكرة:
+# - رفع ملفات PDF
+# - استخراج النص منها
+# - تقسيم النص إلى أجزاء صغيرة
+# - تحويلها إلى Embeddings
+# - تخزينها في FAISS
+# - عند السؤال: البحث عن أقرب أجزاء + إرسالها إلى Gemini
+# =============================================================================
 
-# استيراد أدوات LangChain لتسهيل التعامل مع النصوص وقواعد البيانات المتجهة (Vectors)
+import os
+import streamlit as st
+import google.generativeai as genai
+from PyPDF2 import PdfReader
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 
-# استيراد مكتبة جوجل الرسمية للاتصال بنموذج Gemini
-import google.generativeai as genai
+# =============================================================================
+# إعداد مفتاح Google Gemini API
+# =============================================================================
+# نحاول أولاً استخدام Secrets في Hugging Face
+# وإذا لم يوجد نسمح للمستخدم بإدخاله يدوياً
 
-# تفعيل خاصية تحميل المتغيرات السرية من النظام
-load_dotenv()
+GOOGLE_API_KEY = ""
 
-# =========================================================================
-# 2. إعداد الاتصال بنموذج Google Gemini السريع والمجاني
-# =========================================================================
-# قراءة مفتاح الـ API الخاص بجوجل من النظام (إذا تم حفظه في إعدادات GitHub Secrets)
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+try:
+    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+except:
+    pass
 
-if GOOGLE_API_KEY:
-    # إذا وجدنا المفتاح، نقوم بربطه وتفعيله تلقائياً مع مكتبة جوجل
+if not GOOGLE_API_KEY:
+    st.sidebar.warning("⚠️ أدخل Google API Key")
+
+api_input = st.sidebar.text_input("🔑 Google API Key", type="password")
+
+if api_input:
+    GOOGLE_API_KEY = api_input
     genai.configure(api_key=GOOGLE_API_KEY)
-else:
-    # إذا لم يجده، سنظهر تحذيراً للمستخدم في القائمة الجانبية لإدخاله يدوياً
-    st.sidebar.warning("⚠️ يرجى إدخال مفتاح Google API Key في القائمة الجانبية للتشغيل.")
 
-# تحديد النموذج الأسرع والأفضل والمناسب تماماً للتشغيل السحابي
 MODEL_NAME = "gemini-1.5-flash"
 
+# =============================================================================
+# تحميل نموذج Embedding (مرة واحدة فقط لتحسين الأداء)
+# =============================================================================
+@st.cache_resource
+def load_embeddings():
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
 
-# =========================================================================
-# 3. الدوال البرمجية (Functions) لمعالجة الـ PDF والبحث والتوليد
-# =========================================================================
-
-def get_pdf_text(pdf_docs):
-    """
-    دالة تقوم بفتح ملفات الـ PDF المرفوعة واستخراج كافة النصوص بداخلها.
-    """
+# =============================================================================
+# قراءة ملفات PDF واستخراج النص
+# =============================================================================
+def get_pdf_text(pdf_files):
     text = ""
-    for pdf in pdf_docs:
-        pdf_reader = PdfReader(pdf)       # قراءة الملف الحصري الحالي
-        for page in pdf_reader.pages:     # المرور على كل صفحات الملف صفحة تلو الأخرى
-            page_text = page.extract_text() # استخراج النص من الصفحة الحالية
+    for pdf in pdf_files:
+        reader = PdfReader(pdf)
+        for page in reader.pages:
+            page_text = page.extract_text()
             if page_text:
-                text += page_text         # دمج النص المستخرج مع النصوص السابقة
-    return text                           # إرجاع النص الكامل للكتاب أو الملف
+                text += page_text
+    return text
 
-
-def get_text_chunks(text):
-    """
-    دالة تقسم النص الضخم إلى قطع صغيرة؛ لأن حواسيب الذكاء الاصطناعي تفضل قراءة النصوص مجزأة بدقة.
-    """
+# =============================================================================
+# تقسيم النص إلى أجزاء صغيرة (Chunks)
+# =============================================================================
+def split_text(text):
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,     # حجم كل قطعة نصية هو 1000 حرف تقريباً
-        chunk_overlap=200    # تداخل بمقدار 200 حرف بين القطعة والأخرى لضمان عدم ضياع السياق في الأطراف
+        chunk_size=1000,
+        chunk_overlap=200
     )
     return splitter.split_text(text)
 
-
-def get_vector_store(text_chunks):
-    """
-    دالة تحول النصوص إلى أرقام (Embeddings) يفهمها الكمبيوتر، ثم تخزنها في قاعدة بيانات محلية سريعة البحث.
-    """
-    # استخدام نموذج تشفير خفيف جداً ومجاني من HuggingFace ليعمل بسلاسة على السيرفر
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
-    # إنشاء قاعدة بيانات FAISS ووضع القطع النصية المشفرة بداخلها
-    vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
-    # حفظ قاعدة البيانات في مجلد محلي باسم "faiss_index" لكي نعود إليها عند السؤال
+# =============================================================================
+# إنشاء قاعدة بيانات FAISS
+# =============================================================================
+def create_vector_store(chunks):
+    embeddings = load_embeddings()
+    vector_store = FAISS.from_texts(chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
+    return vector_store
 
+# =============================================================================
+# تحميل قاعدة البيانات
+# =============================================================================
+def load_vector_store():
+    embeddings = load_embeddings()
 
+    if not os.path.exists("faiss_index"):
+        return None
+
+    return FAISS.load_local(
+        "faiss_index",
+        embeddings,
+        allow_dangerous_deserialization=True
+    )
+
+# =============================================================================
+# البحث عن أفضل النصوص المشابهة
+# =============================================================================
+def search_docs(query):
+    db = load_vector_store()
+
+    if db is None:
+        return []
+
+    return db.similarity_search(query, k=4)
+
+# =============================================================================
+# إرسال السؤال إلى Gemini
+# =============================================================================
 def ask_gemini(context, question):
-    """
-    دالة صياغة الأمر (Prompt Engineering) والاتصال بخوادم جوجل لطلب الإجابة الذكية السريعة.
-    """
+
     if not GOOGLE_API_KEY:
-        return "الرجاء إعداد مفتاح Google API أولاً لتتمكن من سؤال النموذج."
+        return "❌ يرجى إدخال مفتاح Gemini أولاً"
 
-    # هندسة الأوامر: إعطاء تعليمات صارمة لـ Gemini لكي يجيب فقط من الملف المرفوع وبأمانة علمية
     prompt = f"""
-You are a helpful AI assistant.
+أجب فقط من السياق التالي:
 
-Answer ONLY using the provided context.
-
-If the answer cannot be found in the context, reply exactly:
-Answer is not available in the context.
-
-Context:
 {context}
 
-Question:
+السؤال:
 {question}
 
-Answer:
+إذا لم تجد الإجابة قل: لا توجد إجابة في المستند
 """
-    try:
-        # استدعاء نموذج جينوم السحابي وإرسال النص والسؤال له
-        model = genai.GenerativeModel(MODEL_NAME)
-        response = model.generate_content(prompt)
-        return response.text # إرجاع نص الإجابة القادم من جوجل
-    except Exception as e:
-        return f"حدث خطأ أثناء الاتصال بـ Google AI Studio: {str(e)}"
 
+    model = genai.GenerativeModel(MODEL_NAME)
+    response = model.generate_content(prompt)
 
-def user_input(user_question):
-    """
-    الدالة المحركة للـ (RAG): تبحث في قاعدة البيانات عن النصوص المناسبة لسؤالك ثم ترسلها للذكاء الاصطناعي لترجمتها لإجابة.
-    """
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
-    
-    # حماية البرنامج: التأكد من أن المستخدم رفع ملفات وصنع قاعدة بيانات قبل أن يسأل
-    if not os.path.exists("faiss_index"):
-        st.error("❌ الرجاء رفع ملفات PDF ومعالجتها من القائمة الجانبية أولاً!")
-        return
+    return response.text
 
-    # تحميل قاعدة البيانات المخزنة محلياً
-    db = FAISS.load_local(
-        "faiss_index", 
-        embeddings, 
-        allow_dangerous_deserialization=True # السماح بفتح الملفات المحلية بأمان
-    )
-    
-    # البحث عن أفضل 4 قطع نصية داخل الـ PDF تشبه وتشرح سؤال المستخدم
-    docs = db.similarity_search(user_question, k=4)
-    # دمج هذه القطع الأربع معاً لتشكل "السياق" أو الغش المسموح به للنموذج
-    context = "".join([doc.page_content for doc in docs])
-    
-    # إظهار دائرة تحميل متحركة للمستخدم أثناء معالجة خوادم جوجل للإجابة
-    with st.spinner("🧠 جاري التفكير والبحث عبر خوادم Google السحابية..."):
-        output = ask_gemini(context, user_question)
-        # طباعة الإجابة النهائية بشكل منسق وجميل في الواجهة
-        st.write("🤖 **الإجابة:**")
-        st.info(output)
+# =============================================================================
+# واجهة Streamlit
+# =============================================================================
+st.set_page_config(page_title="PDF RAG Chat", layout="wide")
 
-# =========================================================================
-# 4. دالة تشغيل واجهة البرنامج الرسومية (Main Interface)
-# =========================================================================
-def main():
-    # إعدادات الصفحة الأساسية في متصفح الويب
-    st.set_page_config(page_title="PDF RAG Chat", layout="wide")
-    # عنوان البرنامج المدمج والمختصر والمطلوب
-    st.header("📄 PDF RAG Chat")
+st.title("📄 PDF RAG Chat (تعليمي)")
 
-    # جعل المتغير العالمي للمفتاح متاحاً للتعديل داخل الواجهة
-    global GOOGLE_API_KEY
-    
-    # مربع النص الأساسي لكتابة سؤال المستخدم
-    user_question = st.text_input("💬 اكتب سؤالك حول المستندات المرفوعة هنا واضغط Enter:")
-    if user_question:
-        user_input(user_question) # استدعاء دالة البحث والإجابة فور كتابة السؤال
+user_question = st.text_input("💬 اكتب سؤالك هنا")
 
-    # بناء القائمة الجانبية (Sidebar) لتنظيم العناصر والمستندات
-    with st.sidebar:
-        st.title("⚙️ لوحة التحكم")
-        
-        # حقل سري لإدخال مفتاح الـ API يدويًا إذا لم يقم الطالب بضبطه في الـ Secrets
-        api_input = st.text_input("🔑 أدخل مفتاح Google API Key الخاص بك:", type="password")
-        if api_input:
-            GOOGLE_API_KEY = api_input
-            genai.configure(api_key=GOOGLE_API_KEY)
+if user_question:
 
-        # أداة لرفع ملفات الـ PDF (تسمح برفع عدة ملفات معاً)
-        pdf_docs = st.file_uploader(
-            "📚 ارفع ملفات الـ PDF الخاصة بك:", 
-            accept_multiple_files=True, 
-            type=["pdf"]
-        )
-        
-        # زر بدء معالجة الملفات المرفوعة
-        if st.button("🚀 بدء معالجة الملفات"):
-            if pdf_docs:
-                with st.spinner("⏳ جاري قراءة وتقسيم وتشفير الملفات..."):
-                    raw_text = get_pdf_text(pdf_docs)       # خطوة 1: استخراج النص
-                    text_chunks = get_text_chunks(raw_text) # خطوة 2: تقسيم النص
-                    get_vector_store(text_chunks)           # خطوة 3: التشفير والحفظ في FAISS
-                    st.success("✅ تمت العملية بنجاح! يمكنك البدء بالأسئلة الآن.")
-            else:
-                st.warning("⚠️ من فضلك اختر ملف PDF واحد على الأقل أولاً.")
+    docs = search_docs(user_question)
 
-# نقطة انطلاق تشغيل الملف البرمجي بالكامل
-if __name__ == "__main__":
-    main()
+    context = "\n".join([d.page_content for d in docs])
+
+    answer = ask_gemini(context, user_question)
+
+    st.subheader("🤖 الإجابة")
+    st.write(answer)
+
+# =============================================================================
+# Sidebar: رفع الملفات
+# =============================================================================
+st.sidebar.title("📁 رفع ملفات PDF")
+
+pdf_files = st.sidebar.file_uploader(
+    "ارفع ملفات PDF",
+    type=["pdf"],
+    accept_multiple_files=True
+)
+
+if st.sidebar.button("🚀 معالجة الملفات"):
+
+    if pdf_files:
+
+        with st.spinner("جاري المعالجة..."):
+
+            raw_text = get_pdf_text(pdf_files)
+            chunks = split_text(raw_text)
+            create_vector_store(chunks)
+
+        st.success("✅ تم تجهيز الملفات بنجاح!")
+
+    else:
+        st.warning("⚠️ يرجى رفع ملفات PDF أولاً")
