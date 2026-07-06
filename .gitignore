@@ -1,32 +1,16 @@
-# =============================================================================
-# .gitignore
-# =============================================================================
-# هذا الملف يحدد الملفات والمجلدات التي لا يتم رفعها إلى GitHub
-# أو حفظها في المشروع على Hugging Face Spaces
-# =============================================================================
-
-# ملفات النظام
-.DS_Store
-Thumbs.db
-
-# بيئات Python الافتراضية
-venv/
-env/
-ENV/
-
-# ملفات الكاش الخاصة بـ Python
+# Python temporary files
 __pycache__/
 *.pyc
 *.pyo
-
-# ملفات Streamlit cache
-.streamlit/
-
-# ملف قاعدة بيانات FAISS (يمكن إعادة إنشائه من PDF)
-faiss_index/
-
-# ملفات البيئة المحلية (غير مستخدمة في Hugging Face)
+*.pyd
+.Python
+env/
+venv/
 .env
 
-# ملفات logs
-*.log
+# Streamlit temporary files
+.streamlit/runtime/
+
+# OS specific files
+.DS_Store
+Thumbs.db
