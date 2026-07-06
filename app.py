@@ -1,184 +1,120 @@
-# =============================================================================
-# app.py
-# =============================================================================
-# مشروع بسيط تعليمي:
-# PDF RAG Chat
-#
-# الفكرة:
-# - رفع ملفات PDF
-# - استخراج النص منها
-# - تقسيم النص إلى أجزاء صغيرة
-# - تحويلها إلى Embeddings
-# - تخزينها في FAISS
-# - عند السؤال: البحث عن أقرب أجزاء + إرسالها إلى Gemini
-# =============================================================================
-
 import os
 import streamlit as st
-import google.generativeai as genai
-from PyPDF2 import PdfReader
-
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
 
-# =============================================================================
-# إعداد مفتاح Google Gemini API
-# =============================================================================
-# نحاول أولاً استخدام Secrets في Hugging Face
-# وإذا لم يوجد نسمح للمستخدم بإدخاله يدوياً
+# 1. إعدادات الصفحة ودعم الواجهة العربية (RTL)
+st.set_page_config(page_title="مساعد الملفات الذكي", page_icon="🤖", layout="centered")
 
-GOOGLE_API_KEY = ""
+st.markdown("""
+    <style>
+    body, .main, .block-container, div[data-testid="stChatMessage"] {
+        direction: RTL;
+        text-align: right;
+    }
+    .stAlert {
+        direction: RTL;
+        text-align: right;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-try:
-    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
-except:
-    pass
+st.title("🤖 مساعد المستندات الذكي (RAG App)")
+st.subheader("ارفع ملفاتك واسألها مباشرة عبر السحابة")
 
-if not GOOGLE_API_KEY:
-    st.sidebar.warning("⚠️ أدخل Google API Key")
+# 2. التحقق من وجود مفتاح الـ API سحابياً لحماية التطبيق
+if "OPENAI_API_KEY" not in os.environ:
+    st.error("⚠️ لم يتم العثور على مفتاح 'OPENAI_API_KEY'. يرجى إضافته في إعدادات (Secrets) الـ Space الخاص بك.")
+    st.stop()
 
-api_input = st.sidebar.text_input("🔑 Google API Key", type="password")
+# 3. تهيئة الذاكرة السحابية المؤقتة للمحادثة وقاعدة المتجهات
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
 
-if api_input:
-    GOOGLE_API_KEY = api_input
-    genai.configure(api_key=GOOGLE_API_KEY)
+# 4. واجهة رفع ومعالجة الملفات سحابياً
+uploaded_file = st.file_uploader("اختر ملف PDF لبدء المعالجة", type=["pdf"])
 
-MODEL_NAME = "gemini-1.5-flash"
+if uploaded_file and st.session_state.vector_store is None:
+    with st.spinner("جاري معالجة وتحليل الملف سحابياً..."):
+        try:
+            # حفظ مؤقت للملف داخل الحاوية السحابية لقراءته
+            temp_file_path = "temp_uploaded_file.pdf"
+            with open(temp_file_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            # استخراج النصوص وتقسيمها
+            loader = PyPDFLoader(temp_file_path)
+            docs = loader.load()
+            
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            final_documents = text_splitter.split_documents(docs)
+            
+            # إنشاء الـ Embeddings وقاعدة بيانات المتجهات في الذاكرة السحابية
+            embeddings = OpenAIEmbeddings()
+            st.session_state.vector_store = FAISS.from_documents(final_documents, embeddings)
+            
+            # إزالة الملف المؤقت فوراً للأمان وحفظ المساحة
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+                
+            st.success("✅ تم تحليل المستند وبناء قاعدة بيانات المتجهات بنجاح!")
+        except Exception as e:
+            st.error(f"❌ حدث خطأ أثناء معالجة الملف: {str(e)}")
 
-# =============================================================================
-# تحميل نموذج Embedding (مرة واحدة فقط لتحسين الأداء)
-# =============================================================================
-@st.cache_resource
-def load_embeddings():
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
+# 5. نظام الاستعلام والـ RAG
+if st.session_state.vector_store is not None:
+    # عرض سجل المحادثة المتوفر في الذاكرة
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
 
-# =============================================================================
-# قراءة ملفات PDF واستخراج النص
-# =============================================================================
-def get_pdf_text(pdf_files):
-    text = ""
-    for pdf in pdf_files:
-        reader = PdfReader(pdf)
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text
-    return text
-
-# =============================================================================
-# تقسيم النص إلى أجزاء صغيرة (Chunks)
-# =============================================================================
-def split_text(text):
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200
-    )
-    return splitter.split_text(text)
-
-# =============================================================================
-# إنشاء قاعدة بيانات FAISS
-# =============================================================================
-def create_vector_store(chunks):
-    embeddings = load_embeddings()
-    vector_store = FAISS.from_texts(chunks, embedding=embeddings)
-    vector_store.save_local("faiss_index")
-    return vector_store
-
-# =============================================================================
-# تحميل قاعدة البيانات
-# =============================================================================
-def load_vector_store():
-    embeddings = load_embeddings()
-
-    if not os.path.exists("faiss_index"):
-        return None
-
-    return FAISS.load_local(
-        "faiss_index",
-        embeddings,
-        allow_dangerous_deserialization=True
-    )
-
-# =============================================================================
-# البحث عن أفضل النصوص المشابهة
-# =============================================================================
-def search_docs(query):
-    db = load_vector_store()
-
-    if db is None:
-        return []
-
-    return db.similarity_search(query, k=4)
-
-# =============================================================================
-# إرسال السؤال إلى Gemini
-# =============================================================================
-def ask_gemini(context, question):
-
-    if not GOOGLE_API_KEY:
-        return "❌ يرجى إدخال مفتاح Gemini أولاً"
-
-    prompt = f"""
-أجب فقط من السياق التالي:
-
-{context}
-
-السؤال:
-{question}
-
-إذا لم تجد الإجابة قل: لا توجد إجابة في المستند
-"""
-
-    model = genai.GenerativeModel(MODEL_NAME)
-    response = model.generate_content(prompt)
-
-    return response.text
-
-# =============================================================================
-# واجهة Streamlit
-# =============================================================================
-st.set_page_config(page_title="PDF RAG Chat", layout="wide")
-
-st.title("📄 PDF RAG Chat (تعليمي)")
-
-user_question = st.text_input("💬 اكتب سؤالك هنا")
-
-if user_question:
-
-    docs = search_docs(user_question)
-
-    context = "\n".join([d.page_content for d in docs])
-
-    answer = ask_gemini(context, user_question)
-
-    st.subheader("🤖 الإجابة")
-    st.write(answer)
-
-# =============================================================================
-# Sidebar: رفع الملفات
-# =============================================================================
-st.sidebar.title("📁 رفع ملفات PDF")
-
-pdf_files = st.sidebar.file_uploader(
-    "ارفع ملفات PDF",
-    type=["pdf"],
-    accept_multiple_files=True
-)
-
-if st.sidebar.button("🚀 معالجة الملفات"):
-
-    if pdf_files:
-
-        with st.spinner("جاري المعالجة..."):
-
-            raw_text = get_pdf_text(pdf_files)
-            chunks = split_text(raw_text)
-            create_vector_store(chunks)
-
-        st.success("✅ تم تجهيز الملفات بنجاح!")
-
-    else:
-        st.warning("⚠️ يرجى رفع ملفات PDF أولاً")
+    # صندوق الاستقبال الذكي للمحادثة
+    user_query = st.chat_input("اسأل أي شيء حول المستند...")
+    
+    if user_query:
+        with st.chat_message("user"):
+            st.write(user_query)
+        st.session_state.chat_history.append({"role": "user", "content": user_query})
+        
+        with st.spinner("جاري استخراج الإجابة الدقيقة..."):
+            try:
+                llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+                retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 3})
+                
+                # توجيه النموذج للالتزام بالسياق المرفق فقط وباللغة العربية
+                system_prompt = (
+                    "أنت مساعد ذكي متخصص في الإجابة على الأسئلة بناءً على المستندات المرفقة فقط.\n"
+                    "استخدم السياق التالي بدقة للإجابة على سؤال المستخدم. إذا لم تكن الإجابة موجودة في السياق، "
+                    "أخبر المستخدم بوضوح ولطف أنك لا تملك الإجابة من خلال المستند المرفق، ولا تقم بابتكار إجابات.\n"
+                    "يجب أن تكون الإجابة باللغة العربية، واضحة، ومباشرة.\n\n"
+                    "{context}"
+                )
+                
+                prompt = ChatPromptTemplate.from_messages([
+                    ("system", system_prompt),
+                    ("human", "{input}"),
+                ])
+                
+                question_answer_chain = create_stuff_documents_chain(llm, prompt)
+                rag_chain = create_retrieval_chain(retriever, question_answer_chain)
+                
+                # تنفيذ الاستدعاء السحابي
+                response = rag_chain.invoke({"input": user_query})
+                answer = response["answer"]
+                
+                with st.chat_message("assistant"):
+                    st.write(answer)
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                
+            except Exception as e:
+                st.error(f"⚠️ عذراً، حدث خطأ أثناء معالجة الطلب: {str(e)}")
+else:
+    if not uploaded_file:
+        st.info("💡 يرجى رفع ملف PDF من الأعلى لتتمكن من البدء في طرح الأسئلة.")
