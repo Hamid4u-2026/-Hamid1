@@ -11,7 +11,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
 # 1. إعدادات الصفحة ودعم الواجهة العربية (RTL)
-st.set_page_config(page_title="مساعد الملفات الذكي ", page_icon="🤖", layout="centered")
+st.set_page_config(page_title="مساعد الملفات الذكي المجاني", page_icon="🤖", layout="centered")
 
 st.markdown("""
     <style>
@@ -28,6 +28,12 @@ st.markdown("""
 
 st.title("🤖 مساعد المستندات الذكي المجاني (RAG App)")
 st.subheader("ارفع ملفاتك واسألها مجاناً بالكامل عبر السحابة")
+
+# زر جانبي لتنظيف الذاكرة في حال حدوث أي تداخل حسابي في المصفوفات
+if st.sidebar.button("🔄 إعادة تهيئة التطبيق وتنظيف الذاكرة"):
+    st.session_state.chat_history = []
+    st.session_state.vector_store = None
+    st.rerun()
 
 # 2. التحقق من وجود مفتاح Hugging Face
 if "HF_TOKEN" not in os.environ:
@@ -54,14 +60,18 @@ if uploaded_file and st.session_state.vector_store is None:
             loader = PyPDFLoader(temp_file_path)
             docs = loader.load()
             
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100)
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
             final_documents = text_splitter.split_documents(docs)
             
-            # 💡 تحديث: تفعيل trust_remote_code لتخطي مشكلة النموذج الأمني لـ Alibaba
+            # 💡 تعديل أمني: تهيئة النموذج بخصائص تضمن توافق الأبعاد الحسابية للمتجهات ومنع تضارب الذاكرة
+            encode_kwargs = {'normalize_embeddings': True}
             embeddings = HuggingFaceEmbeddings(
                 model_name="Alibaba-NLP/gte-multilingual-base",
-                model_kwargs={"trust_remote_code": True}
+                model_kwargs={"trust_remote_code": True},
+                encode_kwargs=encode_kwargs
             )
+            
+            # بناء قاعدة البيانات مباشرة مع المتجهات المحدثة
             st.session_state.vector_store = FAISS.from_documents(final_documents, embeddings)
             
             if os.path.exists(temp_file_path):
@@ -112,7 +122,6 @@ if st.session_state.vector_store is not None:
                 rag_chain = create_retrieval_chain(retriever, question_answer_chain)
                 
                 response = rag_chain.invoke({"input": user_query})
-                # تنظيف النص المرجوع ليعرض الإجابة فقط
                 answer = response["answer"].split("<|im_start|>assistant\n")[-1].replace("<|im_end|>", "").strip()
                 
                 with st.chat_message("assistant"):
