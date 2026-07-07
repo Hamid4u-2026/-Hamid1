@@ -15,7 +15,7 @@ jobs:
           lfs: true
 
       - name: Sync to Hugging Face Spaces
-        uses: huggingface/hub-sync@v1
+        uses: huggingface/hub-sync@main # 💡 تم التحديث إلى الفرع الرئيسي المستقر للأداة
         with:
           repo_id: Hamid2us/PDF-RAG
           repo_type: space
