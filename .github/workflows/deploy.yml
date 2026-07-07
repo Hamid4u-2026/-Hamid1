@@ -15,8 +15,9 @@ jobs:
           lfs: true
 
       - name: Sync to Hugging Face Spaces
-        uses: huggingface/hub-sync@main # 💡 تم التحديث إلى الفرع الرئيسي المستقر للأداة
+        uses: huggingface/hub-sync@main
         with:
-          repo_id: Hamid2us/PDF-RAG
+          # 💡 تم تحديث المسميات هنا لتتوافق مع التحديث الأخير للأداة
+          huggingface_repo_id: Hamid2us/PDF-RAG
+          hf_token: ${{ secrets.HF_TOKEN }}
           repo_type: space
-          token: ${{ secrets.HF_TOKEN }}
