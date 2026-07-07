@@ -17,6 +17,6 @@ jobs:
       - name: Sync to Hugging Face Spaces
         uses: huggingface/hub-sync@v1
         with:
-          repo_id: username/space-name  # ⚠️ استبدل username باسم حسابك و space-name باسم الـ Space الذي أنشأته
+          repo_id: Hamid2us/PDF-RAG # ⚠️ استبدل username باسم حسابك و space-name باسم الـ Space الذي أنشأته
           repo_type: space
           token: ${{ secrets.HF_TOKEN }}
