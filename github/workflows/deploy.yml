@@ -1,0 +1,22 @@
+name: Sync to Hugging Face Spaces
+
+on:
+  push:
+    branches: [main] # تأكد أن هذا هو اسم الفرع الرئيسي لديك كما يظهر بالصورة
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Sync to Hugging Face Spaces
+        uses: huggingface/hub-sync@v1
+        with:
+          repo_id: username/space-name  # ⚠️ استبدل username باسم حسابك و space-name باسم الـ Space الذي أنشأته
+          repo_type: space
+          token: ${{ secrets.HF_TOKEN }}
