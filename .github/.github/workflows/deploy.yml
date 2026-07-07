@@ -2,7 +2,7 @@ name: Sync to Hugging Face Spaces
 
 on:
   push:
-    branches: [main] # تأكد أن هذا هو اسم الفرع الرئيسي لديك كما يظهر بالصورة
+    branches: [main]
 
 jobs:
   deploy:
@@ -17,6 +17,6 @@ jobs:
       - name: Sync to Hugging Face Spaces
         uses: huggingface/hub-sync@v1
         with:
-          repo_id: Hamid2us/PDF-RAG # ⚠️ استبدل username باسم حسابك و space-name باسم الـ Space الذي أنشأته
+          repo_id: Hamid2us/PDF-RAG
           repo_type: space
           token: ${{ secrets.HF_TOKEN }}
