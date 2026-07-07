@@ -1,5 +1,6 @@
 import os
 import streamlit as st
+import tempfile  # 💡 مكتبة إدارة الملفات المؤقتة السحابية الآمنة
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -44,12 +45,12 @@ uploaded_file = st.file_uploader("اختر ملف PDF لبدء المعالجة"
 if uploaded_file and st.session_state.vector_store is None:
     with st.spinner("جاري معالجة وتحليل الملف سحابياً..."):
         try:
-            # حفظ مؤقت للملف داخل الحاوية السحابية لقراءته
-            temp_file_path = "temp_uploaded_file.pdf"
-            with open(temp_file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
+            # 💡 التعديل هنا: استخدام NamedTemporaryFile لتجنب خطأ الصلاحيات السحابية
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+                temp_file.write(uploaded_file.getbuffer())
+                temp_file_path = temp_file.name  # الحصول على المسار المؤقت الآمن
             
-            # استخراج النصوص وتقسيمها
+            # استخراج النصوص وتقسيمها من المسار الآمن
             loader = PyPDFLoader(temp_file_path)
             docs = loader.load()
             
